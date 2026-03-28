@@ -2,6 +2,10 @@ import boto3
 from botocore.config import Config
 import os
 
+# TODO(infra): Add S3 lifecycle policy to xomcloud-downloads bucket.
+# Downloaded zip files are ephemeral (presigned URLs expire in 1 hour).
+# Recommend: expire objects after 24 hours to control storage costs.
+# Configure via Terraform in xomcloud-infrastructure repo.
 S3_DOWNLOAD_BUCKET_NAME = os.environ.get("S3_DOWNLOAD_BUCKET_NAME", "xomcloud-downloads")
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 

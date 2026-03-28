@@ -11,7 +11,7 @@ from lambdas.common.s3 import upload_file, upload_bytes, generate_presigned_url
 __all__ = [
     "get_logger",
     "success",
-    "error", 
+    "error",
     "parse_body",
     "AppError",
     "AuthError",

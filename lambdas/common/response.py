@@ -1,9 +1,15 @@
+from __future__ import annotations
+
 import json
+import logging
 from typing import Any, Optional
+
 from lambdas.common.errors import AppError
 
+logger = logging.getLogger(__name__)
+
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": "https://xomcloud.xomware.com",
     "Access-Control-Allow-Headers": "Content-Type,Authorization",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Content-Type": "application/json"
@@ -32,14 +38,16 @@ def error(err: AppError | Exception, status: int = 500) -> dict:
                 }
             })
         }
-    
+
+    # Log the real error server-side, return generic message to client
+    logger.error("Unhandled exception: %s", str(err), exc_info=True)
     return {
         "statusCode": status,
         "headers": CORS_HEADERS,
         "body": json.dumps({
             "error": {
                 "code": "INTERNAL_ERROR",
-                "message": str(err)
+                "message": "An unexpected error occurred"
             }
         })
     }
@@ -52,4 +60,8 @@ def parse_body(event: dict) -> Optional[dict]:
         return None
     if isinstance(body, dict):
         return body
-    return json.loads(body)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        from lambdas.common.errors import ValidationError
+        raise ValidationError(f"Invalid JSON in request body: {exc.msg}")

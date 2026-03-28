@@ -1,7 +1,17 @@
+from __future__ import annotations
+
 import jwt
 from lambdas.common import get_logger, api_secret_key
 
 log = get_logger(__name__)
+
+
+def _mask_sub(sub: str) -> str:
+    """Mask a user sub for safe logging. Shows first 4 and last 2 chars."""
+    s = str(sub)
+    if len(s) <= 6:
+        return s[:2] + "***"
+    return s[:4] + "***" + s[-2:]
 
 
 def generate_policy(effect: str, resource: str, principal: str = "xomcloud") -> dict:
@@ -27,34 +37,34 @@ def decode_token(token: str) -> dict | None:
     except jwt.ExpiredSignatureError:
         log.warning("Token expired")
         return None
-    except jwt.InvalidTokenError as e:
-        log.warning(f"Invalid token: {e}")
+    except jwt.InvalidTokenError:
+        log.warning("Invalid token presented")
         return None
 
 
 def handler(event: dict, context) -> dict:
-    """Lambda authorizer handler for XOMCLOUD API."""
-    try:
-        method_arn = event.get("methodArn", "")
-        auth_token = event.get("authorizationToken", "")
-        
-        if not method_arn:
-            log.warning("Missing method ARN")
-            return generate_policy("Deny", "*")
-        
-        if not auth_token:
-            log.warning("Missing authorization token")
-            return generate_policy("Deny", method_arn)
-        
-        # Decode and validate JWT
-        user = decode_token(auth_token)
-        if user:
-            log.info(f"Authorized user: {user.get('sub', 'unknown')}")
-            return generate_policy("Allow", method_arn, principal=str(user.get('sub', 'xomcloud')))
-        
-        log.warning("Authorization denied - invalid token")
-        return generate_policy("Deny", method_arn)
+    """Lambda authorizer handler for XOMCLOUD API.
 
-    except Exception as e:
-        log.error(f"Error in authorizer: {e}")
-        return generate_policy("Deny", event.get("methodArn", "*"))
+    Raises Exception('Unauthorized') on auth failure so API Gateway
+    returns a proper 401 instead of a cached Deny policy.
+    """
+    method_arn = event.get("methodArn", "")
+    auth_token = event.get("authorizationToken", "")
+
+    if not method_arn:
+        log.warning("Missing method ARN")
+        raise Exception("Unauthorized")
+
+    if not auth_token:
+        log.warning("Missing authorization token")
+        raise Exception("Unauthorized")
+
+    # Decode and validate JWT
+    user = decode_token(auth_token)
+    if user:
+        user_sub = str(user.get("sub", "xomcloud"))
+        log.info("Authorized user: %s", _mask_sub(user_sub))
+        return generate_policy("Allow", method_arn, principal=user_sub)
+
+    log.warning("Authorization denied - invalid token")
+    raise Exception("Unauthorized")
