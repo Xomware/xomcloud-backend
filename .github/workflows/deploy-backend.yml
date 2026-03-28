@@ -11,7 +11,26 @@ env:
   APP_NAME: xomcloud
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run tests
+        run: pytest tests/ -v
+
   deploy-authorizer:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +57,7 @@ jobs:
             --image-uri ${{ env.ECR_REGISTRY }}/${{ env.APP_NAME }}-authorizer:latest
 
   deploy-download-tracks:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

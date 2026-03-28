@@ -1,6 +1,3 @@
-# lambdas/download_tracks/downloader.py
-# Async SoundCloud downloader using scdl with proper file naming
-
 import asyncio
 import os
 import tempfile
@@ -16,9 +13,6 @@ from lambdas.common import get_logger, DownloadError, soundcloud_client_id
 
 log = get_logger(__name__)
 
-# Thread pool for blocking operations (scdl is not truly async)
-_executor = ThreadPoolExecutor(max_workers=4)
-
 
 @dataclass
 class Track:
@@ -27,23 +21,23 @@ class Track:
     url: str
     title: str
     artist: str
-    
+
     @property
     def safe_filename(self) -> str:
         """Generate a safe filename: Artist - Title"""
         safe_artist = self._sanitize(self.artist)
         safe_title = self._sanitize(self.title)
-        
+
         if safe_artist and safe_title:
             name = f"{safe_artist} - {safe_title}"
         elif safe_title:
             name = safe_title
         else:
             name = f"track_{self.id}"
-        
+
         # Limit length
         return name[:150]
-    
+
     @staticmethod
     def _sanitize(s: str) -> str:
         """Remove unsafe characters from filename."""
@@ -71,9 +65,9 @@ def _download_track_sync(track: Track, output_dir: str, client_id: str) -> Downl
     """
     try:
         from scdl import download_url
-        
+
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Build scdl arguments
         scdl_args = {
             "l": track.url,
@@ -122,28 +116,28 @@ def _download_track_sync(track: Track, output_dir: str, client_id: str) -> Downl
             "t": False,
             "yt_dlp_args": "",
         }
-        
-        log.info(f"Downloading: {track.artist} - {track.title}")
+
+        log.info("Downloading: %s - %s", track.artist, track.title)
         download_url(track.url, **scdl_args)
-        
+
         # Find the downloaded file
         downloaded_file = _find_downloaded_file(output_dir, track)
-        
+
         if downloaded_file:
-            log.info(f"✓ Downloaded: {track.safe_filename}")
+            log.info("Downloaded: %s", track.safe_filename)
             return DownloadResult(track=track, success=True, file_path=downloaded_file)
-        
+
         return DownloadResult(
-            track=track, 
-            success=False, 
+            track=track,
+            success=False,
             error="File not found after download"
         )
-        
+
     except ImportError:
         log.error("scdl not installed")
         return DownloadResult(track=track, success=False, error="scdl not installed")
     except Exception as e:
-        log.error(f"Failed to download {track.title}: {e}")
+        log.error("Failed to download %s: %s", track.title, e)
         return DownloadResult(track=track, success=False, error=str(e))
 
 
@@ -151,42 +145,46 @@ def _find_downloaded_file(output_dir: str, track: Track) -> Optional[str]:
     """Find the downloaded file in output directory."""
     audio_extensions = ('.mp3', '.m4a', '.wav', '.opus', '.flac', '.ogg')
     safe_name = track.safe_filename.lower()
-    
+
     for fname in os.listdir(output_dir):
         ext = os.path.splitext(fname)[1].lower()
         if ext not in audio_extensions:
             continue
-        
+
         path = os.path.join(output_dir, fname)
         fname_lower = fname.lower()
-        
+
         # Check if filename matches our expected pattern
         if safe_name[:20].lower() in fname_lower:
             return path
-        
+
         # Also check by track ID
         if track.id in fname:
             return path
-    
+
     # If still not found, return the first audio file (last resort)
     for fname in os.listdir(output_dir):
         ext = os.path.splitext(fname)[1].lower()
         if ext in audio_extensions:
             return os.path.join(output_dir, fname)
-    
+
     return None
 
 
 async def download_track(track: Track, output_dir: str, client_id: str) -> DownloadResult:
     """Download a single track asynchronously."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        _executor, 
-        _download_track_sync, 
-        track, 
-        output_dir,
-        client_id
-    )
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
+        return await loop.run_in_executor(
+            executor,
+            _download_track_sync,
+            track,
+            output_dir,
+            client_id
+        )
+    finally:
+        executor.shutdown(wait=False)
 
 
 async def download_tracks(tracks: list[Track]) -> tuple[str, list[DownloadResult]]:
@@ -196,18 +194,18 @@ async def download_tracks(tracks: list[Track]) -> tuple[str, list[DownloadResult
     """
     if not tracks:
         raise DownloadError("No tracks provided")
-    
-    # Get SoundCloud client ID from SSM
+
+    # Get SoundCloud client ID from SSM -- fail loudly if missing
     try:
         client_id = soundcloud_client_id()
     except Exception as e:
-        log.warning(f"Could not get client_id from SSM: {e}")
-        client_id = None
-    
+        log.error("Failed to retrieve SoundCloud client_id: %s", e)
+        raise DownloadError("SoundCloud client configuration is missing")
+
     # Create temp directory for this batch
     temp_dir = tempfile.mkdtemp(prefix="xomcloud_")
-    log.info(f"Downloading {len(tracks)} tracks to {temp_dir}")
-    
+    log.info("Downloading %d tracks to %s", len(tracks), temp_dir)
+
     # Download all tracks concurrently
     # Each track gets its own subdirectory to avoid naming conflicts
     tasks = []
@@ -215,29 +213,29 @@ async def download_tracks(tracks: list[Track]) -> tuple[str, list[DownloadResult
         track_dir = os.path.join(temp_dir, f"track_{i}")
         os.makedirs(track_dir, exist_ok=True)
         tasks.append(download_track(track, track_dir, client_id))
-    
+
     results = await asyncio.gather(*tasks)
-    
+
     # Collect successful downloads
     successful = [r for r in results if r.success and r.file_path]
-    
+
     if not successful:
         raise DownloadError("All downloads failed")
-    
+
     # Create zip file with proper names
     zip_filename = f"xomcloud_{uuid.uuid4().hex[:8]}.zip"
     zip_path = os.path.join(temp_dir, zip_filename)
-    
-    log.info(f"Creating zip with {len(successful)} tracks")
-    
+
+    log.info("Creating zip with %d tracks", len(successful))
+
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for result in successful:
             # Use the track's safe filename for the zip entry
             original_ext = os.path.splitext(result.file_path)[1]
             arcname = f"{result.track.safe_filename}{original_ext}"
-            
+
             zf.write(result.file_path, arcname)
-            log.info(f"  Added: {arcname}")
-    
-    log.info(f"Created zip: {zip_path} ({len(successful)}/{len(tracks)} tracks)")
+            log.info("  Added: %s", arcname)
+
+    log.info("Created zip: %s (%d/%d tracks)", zip_path, len(successful), len(tracks))
     return zip_path, results
